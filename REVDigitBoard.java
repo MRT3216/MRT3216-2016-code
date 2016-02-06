@@ -8,9 +8,9 @@ import edu.wpi.first.wpilibj.AnalogInput;
 
 import java.util.*;
 
-public class REVDigitBoard {
+public class REVDigitBoard { // wrapper for REV digit board
 	/*
-	 * DOCUMENTATION::
+	 * DOCUMENTATION:
 	 * 
 	 * REVDigitBoard() : constructor
 	 * void display(String str) : displays the first four characters of the string (only alpha (converted to uppercase), numbers, and spaces)
@@ -25,16 +25,16 @@ public class REVDigitBoard {
 	DigitalInput buttonA, buttonB;
 	AnalogInput pot;
 	
-	byte[][] charreg;
-	Map charmap;
+	byte[][] charreg; // array to hold the character definitions
+	Map<Character, Integer> charmap; // map between actual characters and the position in the array
 	
 	REVDigitBoard() {
-		i2c = new I2C(Port.kMXP, 0x70);
-		buttonA = new DigitalInput(19);
+		i2c = new I2C(Port.kMXP, 0x70); // i2c address 0x70
+		buttonA = new DigitalInput(19); // and the buttons
 		buttonB = new DigitalInput(20);
-		pot = new AnalogInput(3);
+		pot = new AnalogInput(3); // and the potentiometer
 		
-		byte[] osc = new byte[1];
+		byte[] osc = new byte[1]; // idk what this part does, probably initialization
 	 	byte[] blink = new byte[1];
 	 	byte[] bright = new byte[1];
 	 	osc[0] = (byte)0x21;
@@ -49,27 +49,27 @@ public class REVDigitBoard {
 		Timer.delay(.01);
 		
 		charreg = new byte[37][2]; //charreg is short for character registry
-		charmap = new HashMap<Character, Integer>(); 
+		charmap = new HashMap<Character, Integer>(); // map from character to int index
 		
-		charreg[0][0] = (byte)0b00111111; charreg[9][1] = (byte)0b00000000; //0
+		charreg[0][0] = (byte)0b00111111; charreg[0][1] = (byte)0b00000000; //0
 		charmap.put('0',0);
-		charreg[1][0] = (byte)0b00000110; charreg[0][1] = (byte)0b00000000; //1
+		charreg[1][0] = (byte)0b00000110; charreg[1][1] = (byte)0b00000000; //1
 		charmap.put('1',1);
-	 	charreg[2][0] = (byte)0b11011011; charreg[1][1] = (byte)0b00000000; //2
+	 	charreg[2][0] = (byte)0b11011011; charreg[2][1] = (byte)0b00000000; //2
 		charmap.put('2',2);
-	 	charreg[3][0] = (byte)0b11001111; charreg[2][1] = (byte)0b00000000; //3
+	 	charreg[3][0] = (byte)0b11001111; charreg[3][1] = (byte)0b00000000; //3
 		charmap.put('3',3);
-	 	charreg[4][0] = (byte)0b11100110; charreg[3][1] = (byte)0b00000000; //4
+	 	charreg[4][0] = (byte)0b11100110; charreg[4][1] = (byte)0b00000000; //4
 		charmap.put('4',4);
-	 	charreg[5][0] = (byte)0b11101101; charreg[4][1] = (byte)0b00000000; //5
+	 	charreg[5][0] = (byte)0b11101101; charreg[5][1] = (byte)0b00000000; //5
 		charmap.put('5',5);
-	 	charreg[6][0] = (byte)0b11111101; charreg[5][1] = (byte)0b00000000; //6
+	 	charreg[6][0] = (byte)0b11111101; charreg[6][1] = (byte)0b00000000; //6
 		charmap.put('6',6);
-	 	charreg[7][0] = (byte)0b00000111; charreg[6][1] = (byte)0b00000000; //7
+	 	charreg[7][0] = (byte)0b00000111; charreg[7][1] = (byte)0b00000000; //7
 		charmap.put('7',7);
-	 	charreg[8][0] = (byte)0b11111111; charreg[7][1] = (byte)0b00000000; //8
+	 	charreg[8][0] = (byte)0b11111111; charreg[8][1] = (byte)0b00000000; //8
 		charmap.put('8',8);
-	 	charreg[9][0] = (byte)0b11101111; charreg[8][1] = (byte)0b00000000; //9
+	 	charreg[9][0] = (byte)0b11101111; charreg[9][1] = (byte)0b00000000; //9
 		charmap.put('9',9);
 
 	 	charreg[10][0] = (byte)0b11110111; charreg[10][1] = (byte)0b00000000; //A
@@ -124,6 +124,7 @@ public class REVDigitBoard {
 		charmap.put('Y',34);
 	 	charreg[35][0] = (byte)0b00001001; charreg[35][1] = (byte)0b00100100; //Z
 		charmap.put('Z',35);
+		
 		charreg[36][0] = (byte)0b00000000; charreg[36][1] = (byte)0b00000000; //space
 		charmap.put(' ',36);
 	}
@@ -131,11 +132,11 @@ public class REVDigitBoard {
 	void display(String str) { // only displays first 4 chars
 		int[] charz = new int[4];
 		// uppercase and map it
-		str = repeat(' ',Math.max(0, 4-str.length())) + str.toUpperCase(); // pad it to 4 chars
+		str = repeat(' ',Math.max(0, 4-str.length())) + str.toUpperCase(); // pad it to 4 chars, convert to uppercase
 		
-		for (int i = 0; i < 4; i++) {
-			Integer g = (int) charmap.get(str.charAt(i));
-			if (g == null) {
+		for (int i = 0; i < 4; i++) { // first 4 chars of string
+			Integer g = (int) charmap.get(str.charAt(i)); // get location from char map
+			if (g == null) { // if not in the char map, show a space
 				g = 36;
 			}
 			charz[i] = g;
@@ -146,12 +147,12 @@ public class REVDigitBoard {
 	void display(double batt) { // optimized for battery voltage, needs a double like 12.34
 		int[] charz = {36,36,36,36};
 		// idk how to decimal point
-		int ten = (int)(batt/10);
-		int one = (int)(batt%10);
-		int tenth = (int)((batt*10)%10);
-		int hundredth = (int)((batt*100)%10);
+		int ten = (int)(batt/10); // extract tenths place
+		int one = (int)(batt%10); // ones place
+		int tenth = (int)((batt*10)%10); // tenths
+		int hundredth = (int)((batt*100)%10); // hundredths
 		
-		if (ten != 0) charz[0] = ten;
+		if (ten != 0) charz[0] = ten; // if less than 10, don't display the leading zero
 		charz[1] = one;
 		charz[2] = tenth;
 		charz[3] = hundredth;
@@ -160,11 +161,11 @@ public class REVDigitBoard {
 	}
 	
 	 void clear() {
-		 int[] charz = {36,36,36,36}; // whyy java
+		 int[] charz = {36,36,36,36}; // just displays 4 spaces
 		 this._display(charz);
 	 }
 	 
-	 boolean getButtonA() {
+	 boolean getButtonA() { 
 		 return buttonA.get();
 	 }
 	 boolean getButtonB() {
@@ -176,9 +177,9 @@ public class REVDigitBoard {
 	
 ////// not supposed to be publicly used..
 	
-	void _display(int[] charz) {
+	void _display(int[] charz) { // takes an array of 4 character indices
 		byte[] byte1 = new byte[10];
-		byte1[0] = (byte)(0b0000111100001111);
+		byte1[0] = (byte)(0b0000111100001111); // apparently this works???
  		byte1[2] = charreg[charz[3]][0];
  		byte1[3] = charreg[charz[3]][1];
  		byte1[4] = charreg[charz[2]][0];
@@ -192,7 +193,7 @@ public class REVDigitBoard {
  		Timer.delay(0.01);
 	}
 	
-	String repeat(char c, int n) {
+	String repeat(char c, int n) { // used to pad the string
 	    char[] arr = new char[n];
 	    Arrays.fill(arr, c);
 	    return new String(arr);

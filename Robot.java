@@ -1,52 +1,44 @@
 package org.usfirst.frc.team3216.robot;
-
+// all them imports:
 import edu.wpi.first.wpilibj.*;
 import edu.wpi.first.wpilibj.networktables.NetworkTable;
 import org.usfirst.frc.team3216.robot.REVDigitBoard;
+import org.usfirst.frc.team3216.robot.Arduino;
+import org.usfirst.frc.team3216.robot.MovingAverage;
 
 public class Robot extends IterativeRobot {
-	/**
-	 * This function is run when the robot is first started up and should be
-	 * used for any initialization code.
-	 */
+	// setting up all the objects
 	// global objects:
-	Joystick xBox; // xbox controller, obvoiusly
+	Joystick xBox; // xbox controller, obvoiusly (well actually a logitech gamepad)
 	
-	Compressor pcm; // pneumatics compressor
-	PowerDistributionPanel pdp;
-	DriverStation ds;
-	NetworkTable table;
+	Compressor pcm; // pneumatics compressor and solenoid controller
+	PowerDistributionPanel pdp; // to get voltage/amperage stuff
+	DriverStation ds; // getting DS state, other info
+	NetworkTable table; // sending data back & forth for sensors
+	Preferences pref; // stateful settings (nonvolatile)
 	
-	VictorSP leftdrive,rightdrive;
-	DoubleSolenoid shift;
-	Talon ballmotor;
-	DoubleSolenoid ballholder;
+	VictorSP leftdrive,rightdrive; // y-cable thiede outputs to the two speed controllers (2 motors per side)
+	DoubleSolenoid shift; // connect the two shifter pneumatic actuators in parallel
+	Talon ballmotor; // motor to push/pull ball in and out
+	DoubleSolenoid ballholder; // two parallel pneumatic actuators to lift ball and hold it in place
 	
-	AnalogInput range, leftpressure, rightpressure;
+	AnalogInput range, leftpressure, rightpressure; // range = analog out of ultrasonic rangefinder, *pressure = analog pressure resistors on the front
+	Timer arduinoTimer, gearTimer, ballTimer; // timers for handling timed events
 	
-	REVDigitBoard disp;
+	REVDigitBoard disp; // digit board connected to MXP
+	//SerialPort arduino; // this never worked
+	Arduino arduino; // wrapper class to make I2C setup easier
+	MovingAverage rangefinder; // smooth spikes in the rangefinder input by averaging the last several samples
 	
-	SerialPort arduino;
-	Timer arduinoTimer, gearTimer, ballTimer;
-	
-	
-	// auton smoothing
-	final static int initvalue = 250;
-	final static int numreadings = 5;          //The number of samples to smooth.  Helps to avoid incorrect readings due to noise or voltage spikes  
-	static double[] readings = new double[numreadings];  //Stores the values from the rangefinder
-	static int index   = 0;              //The location within the array to store the value
-	static double total = initvalue*numreadings;
-	static double r_average = 0;  
-	static double a_range;
-	
-	
-	static boolean autonstart = false, autonend = false;
+	static boolean autonstart = false, autonend = false; // to help handle the 3-stage auton: startup, periodic, end
 	
 	// setpoints
 	static double pressuresp = 10; // setpoint for pressure sensors to trigger the automatic low gear switch
-	static int autondistsp = 250; // centimeters (411)
+	static int autondistsp = 250; // distance to move in autonomous (cm iirc)
 	static double deadzonesp = 0.15; // deadzone in joysticks
 	static double triggerdzsp = 0.15; // trigger deadzone
+	static double geartimersp = 0.3; // timer for gearshift delay (in seconds)
+	static double arduinotimersp = 0.2; // send data to arduino every x seconds
 	
 	/* Connections:
 	 * 
@@ -56,47 +48,70 @@ public class Robot extends IterativeRobot {
 	 * ball holder: solenoid 2&3
 	 * rangefinder: analog input 0
 	 * pressure sensors on front: analog 2&3
+	 * onboard i2c to an arduino
 	 */
 	
 	public void robotInit() {
 
-		xBox = new Joystick(0);
-		pcm = new Compressor(0);
-		table = NetworkTable.getTable("datatable");
-		pdp = new PowerDistributionPanel();
-		ds = DriverStation.getInstance();
+		xBox = new Joystick(0); // joystick port 0
+		pcm = new Compressor(0); // compressor on can network at id 0
+		table = NetworkTable.getTable("datatable"); // this table communicates back to the computer for diagnostic purposes
+		pdp = new PowerDistributionPanel(); // pdp objecto to read amperages, etc.
+		ds = DriverStation.getInstance(); // to get match info for LEDs
+		pref = Preferences.getInstance(); // to get/set setpoints and other nonvolatile data
 		
-		leftdrive = new VictorSP(0);
-		rightdrive = new VictorSP(1);
+		leftdrive = new VictorSP(0); // left motors = pwm 0
+		rightdrive = new VictorSP(1); // right motors = pwm 1
 		
-		shift = new DoubleSolenoid(0,1); // easiest way to reverse the controls is to switch these numbers
+		shift = new DoubleSolenoid(0,1); // shifter pneumtics on solenoid 0,1
 		
-		ballmotor = new Talon(2);
-		ballholder = new DoubleSolenoid(2,3);
+		ballmotor = new Talon(2); // ball suck/eject motor = pwm 2
+		ballholder = new DoubleSolenoid(2,3); // ball holder pneumatics on solenoid 2,3
 		
-		range = new AnalogInput(0);
+		range = new AnalogInput(0); // analog rangefinder
+		rangefinder = new MovingAverage(5,250); // moving average for rangefinder
 		
-		leftpressure = new AnalogInput(1);
+		leftpressure = new AnalogInput(1); // force-sensitive resistors
 		rightpressure = new AnalogInput(2);
 		
-		disp = new REVDigitBoard();
-		disp.clear();
-		disp.display("3216");
+		disp = new REVDigitBoard(); // REV digit board object
+		disp.clear(); // clear any prevoius data
+		disp.display("load"); // indicate that the robot is loading. this will be overwritten in the sendData periodic function
 		
-		try {
-			arduino = new SerialPort(19200,SerialPort.Port.kUSB);
-		} catch (RuntimeException a) { }
+		/*try {
+			arduino = new SerialPort(19200,SerialPort.Port.kUSB); //  this never did work, used I2C instead
+		} catch (RuntimeException a) { }*/
+		arduino = new Arduino((byte)84); // arduino i2c slave is at 84
 		
-		gearTimer = new Timer();
-		arduinoTimer = new Timer();
-		arduinoTimer.start();
-		ballTimer = new Timer();
+		gearTimer = new Timer(); // timer to hold gear solenoids open long enough to switch, but we don't want to waste air
+		arduinoTimer = new Timer(); // timer to send data to the arduino at intervals to no flood the buffers
+		arduinoTimer.start(); // start it so we can send data
+		ballTimer = new Timer(); // timer for ball pneumatics (same reason as gear)
 		
 		pcm.setClosedLoopControl(true); // this is now done programatically by the pneumatics module
 		
-		for (int i = 0; i < numreadings; i++) readings[i] = initvalue;
-		autonstart = false;
+		autonstart = false; // make sure these are false for the third time
 		autonend = false;
+		
+		/// prefs:  (there are sooo many better ways to do this... in python)
+		if (!pref.containsKey("pressuresp")) { // if key doesn't exist...
+			pref.putDouble("pressuresp", pressuresp); // add the setpoint from ram (hard-coded)
+		}
+		if (!pref.containsKey("autondistsp")) {
+			pref.putInt("autondistsp", autondistsp);
+		}
+		if (!pref.containsKey("deadzonesp")) {
+			pref.putDouble("deadzonesp", deadzonesp);
+		}
+		if (!pref.containsKey("triggerdzsp")) {
+			pref.putDouble("triggerdzsp", triggerdzsp);
+		}
+		if (!pref.containsKey("arduinotimersp")) {
+			pref.putDouble("arduinotimersp",arduinotimersp);
+		}
+		if (!pref.containsKey("geartimersp")) {
+			pref.putDouble("geartimersp",geartimersp);
+		}
 	}
 
 	// This function is called periodically during autonomous
@@ -104,54 +119,50 @@ public class Robot extends IterativeRobot {
 		sendData(); // this also does the moving average stuff
 		
 		if (!autonstart) {
-			// TODO: start up the stuff
-			
+			// TODO: set up the stuff
 			autonstart = true;
 		} else if (autonstart && !autonend) {
-			double speed = 0.5; //map(a_range, 0, 200, 0, 1)*0.5+0.1;
-			
-			if (r_average < autondistsp) {
+			double speed = 0.5; //map(a_range, 0, 200, 0, 1)*0.5+0.1; // this was a variable speed formula but it didn't work
+			if (rangefinder.getAverage() < autondistsp) {
 				//  TODO: drive forward
 			} else {
 				autonend = true;
 			}
 		} else if (autonend) {
-			// stop it
+			// TODO: stop it
 		}
-		
 	}
 
 	// variables used in teleop:
-	double leftstick, rightstick, triggerr, triggerl, pressurer, pressurel;
-	boolean buttonl, buttonr;
+	double leftstick, rightstick, triggerr, triggerl, pressurer, pressurel; // these are data points pulled off the xbox controller
+	boolean buttonl, buttonr; // also xbox controller stuff
 	// This function is called periodically during operator control
 	public void teleopPeriodic() {
 		// this took a lot of guess-and-check, since several 
 		// axes were messed up this year. don't trust the 
 		// joystick explorer, use the DS for testing these
-		leftstick = xBox.getRawAxis(1);
+		leftstick = xBox.getRawAxis(1); // these are supposed to be the vertical axes (for tank drive)
 		rightstick = xBox.getRawAxis(3);
 		
-		buttonl = xBox.getRawButton(6); //get button state
+		buttonl = xBox.getRawButton(6); // left bumper overrides the gearshift and forces it into low gear (high by default)
 		buttonr = xBox.getRawButton(5); 
  
-		triggerl = xBox.getRawAxis(2);
+		triggerl = xBox.getRawAxis(2); // these spin up the motor to inject/eject the boulder
 		triggerr = xBox.getRawAxis(3);	
 		
-		pressurer = rightpressure.getVoltage();
+		pressurer = rightpressure.getVoltage(); // get the voltage from the force-sensitive resistors
 		pressurel = leftpressure.getVoltage();
 		
-		drive(leftstick,rightstick);
+		drive(leftstick,rightstick); // drive function
 		
-		manageGears(pressurel, pressurer, buttonl); 
+		manageGears(pressurel, pressurer, buttonl); // gearshift logic code
 		
-		manageBall(triggerl-triggerr);
+		manageBall(triggerl-triggerr); // ball logic and timing code
 		
-		sendData();
+		sendData(); // periodic function
 	}
 	
-	/*
-	 * func definitions:
+	/* the following useful functions:
 	 * 
 	 * drive(double left_joystick, double right_joystick) : moves the motors, handles deadzone and ideally reversing stuff
 	 * manageGears(double analog_pressure_left, double analog_pressure_right, boolean override_switch) : automatic gearshifting with manual override
@@ -161,7 +172,7 @@ public class Robot extends IterativeRobot {
 	//////////////////////////////// various management functions
 	
 	void drive(double left, double right) {
-		if (Math.abs(left) > deadzonesp) {
+		if (Math.abs(left) > deadzonesp) { // deadzone the motors
 			leftdrive.set(left);
 		} else {
 			leftdrive.set(0);
@@ -174,18 +185,20 @@ public class Robot extends IterativeRobot {
 		}
 	}
 	
-	boolean timerRunning = false;
+	boolean timerRunning = false; // for some reason, timers don't have a field to figure this out
 	
 	void manageBall(double direction) {
 		// positive values eject, negative values take in
 		
-		if (Math.abs(direction) > deadzonesp) {
+		if (Math.abs(direction) > deadzonesp) { // deadzone this as well
 			rightdrive.set(direction);
-			if (!timerRunning) ballTimer.start();
-			timerRunning = true;
+			if (!timerRunning) { // to time the ball holder: it needs to spin up the motors before the holder drops the ball for maximum speed ejection`
+				ballTimer.reset();
+				ballTimer.start();
+				timerRunning = true;
+			}
 		} else {
-			rightdrive.set(0);
-			ballTimer.reset();
+			rightdrive.set(0); // stop it all
 			timerRunning = false;
 		}
 	}
@@ -196,95 +209,93 @@ public class Robot extends IterativeRobot {
 		// not sure what to do with the encoder/speed thing yet (double lencoder, double rencoder, double lspeed, double rspeed,) <-- add that in
 		boolean gear = !(lpressure > pressuresp || rpressure > pressuresp || override);
 
-		// this will stop the solenoid after 200 msec 
-		if (gearTimer.get() > 0.2) { 
+		// this will stop the solenoid after a time
+		if (gearTimer.get() > geartimersp) { 
 			shift.set(DoubleSolenoid.Value.kOff);
 			gearTimer.stop();
 			gearTimer.reset();
+			lastgear = gear;
 		}
-		else if (gear != lastgear && gear) {
+		else if (gear != lastgear && gear) { // if change is needed
 			shift.set(DoubleSolenoid.Value.kForward);
 			gearTimer.start();
 		}
-		else if (gear != lastgear && !gear) {
+		else if (gear != lastgear && !gear) { 
 			shift.set(DoubleSolenoid.Value.kReverse);
 			gearTimer.start();
 		}
-		
-		lastgear = gear;
 	}
 
 	////////////////////////// miscellaneous stuffs
 	
 	public void testPeriodic() {
-		sendData();
+		sendData(); // send data in test
 	}
 	
 	public void disabledPeriodic() {
-		sendData();
+		sendData(); // send data in disabled
 	}
 	
-	double map(double value, double istart, double istop, double ostart, double ostop){
+	double map(double value, double istart, double istop, double ostart, double ostop){ // to map stuff from one range to another
 		return ostart + (ostop - ostart) * ((value - istart) / (istop - istart));
 	}
 	
-	byte[] lastmode = new byte[10];
-	
+	// this kinda became the all-encompassing function to handle periodic tasks.
 	void sendData() {
 		//moving average for rangefinder
-		double a_range = range.getVoltage() / (5.0/1024.0); // centimeters
-		total -= readings[index];         //subtract the last reading
-		readings[index] = a_range;        //place value from sensor
-		total += readings[index];         //add the reading to the total
-		index++;                          //advance to the next position in the array
-		if (index>=numreadings) index=0;  //if its at the end of the array, wrap around to the beginning
-		r_average = total / numreadings;    //calculate the average
+		double a_range = range.getVoltage() / (5.0/1024.0); // centimeters hopefully
+		rangefinder.newSample(a_range);
 	
-		try {
-			// put data into table
-			/*table.putNumber("accel_x",acc.getX());
-			table.putNumber("accel_y",acc.getY());
-			table.putNumber("accel_z",acc.getZ());
-			table.putNumber("gyro_r",gyro.getAngle());
-			table.putNumber("gyro_s",gyro.getRate());
-			table.putNumber("enc_r",winchenc.getRate());
-			table.putNumber("pwr_v",pdp.getVoltage());
-			table.putNumber("pwr_t",pdp.getTemperature());
-			table.putNumber("pwr_c",pdp.getTotalCurrent());
+		try { // put data into table (probably disable this during comp
+			table.putNumber("pwr_v",pdp.getVoltage()); // PDP voltage (not the same as DS voltage)
+			table.putNumber("pwr_t",pdp.getTemperature()); // useful to tell if there are things heating up
+			table.putNumber("pwr_c",pdp.getTotalCurrent()); // total current draw
 			for (int i = 0; i < 16; i++) 
-				table.putNumber("pwr_c_" + i,pdp.getCurrent(i));    
-			table.putNumber("pcm_c",pcm.getCompressorCurrent());    */
-			table.putNumber("range",a_range);
-		} catch (RuntimeException a) { } 
+				table.putNumber("pwr_c_" + i,pdp.getCurrent(i)); // current draw for all 16 channels
+			table.putNumber("pcm_c",pcm.getCompressorCurrent()); // compressor current draw
+			table.putNumber("range",a_range); // rangefinder raw
+			table.putNumber("range_smooth",rangefinder.getAverage()); // averaged rangefinder value
+		} catch (RuntimeException a) { } // runtime exception could be caused by CAN timeout
+		
+		// settings... soooo much work
+		double temp = pref.getDouble("pressuresp", pressuresp); // if changed in networktable, update here
+		if (pressuresp != temp) pressuresp = temp;
+		int temp2 = pref.getInt("autondistsp", autondistsp);
+		if (autondistsp != temp2) autondistsp = temp2;
+		temp = pref.getDouble("deadzonesp", deadzonesp);
+		if (deadzonesp != temp) deadzonesp = temp;
+		temp = pref.getDouble("triggerdzsp", triggerdzsp);
+		if (triggerdzsp != temp) triggerdzsp = temp;
+		temp = pref.getDouble("arduinotimersp", arduinotimersp);
+		if (arduinotimersp != temp) arduinotimersp = temp;
+		temp = pref.getDouble("geartimersp", geartimersp);
+		if (geartimersp != temp) geartimersp = temp;
+		// the processing program on the other end will edit the "Preferences" networktable live
 		
 		//digit board
 		try {
 			disp.display(ds.getBatteryVoltage()); //live voltage readout ideally, or whatever we need
-		} catch (RuntimeException a) { }
+		} catch (RuntimeException a) { } // to handle I2C errors?
 		
 		// now do light stuff
 		try {
-			if (arduino == null)
-				arduino = new SerialPort(19200,SerialPort.Port.kUSB);
-		} catch (RuntimeException a) { }
-		try {
-			if (arduinoTimer.get() > 0.2) { // send every 200msec to avoid buffer overflows
-				byte mode1 = 0;  //////// 0b<red><blue><fms><auton><teleop><disabled><enabled><attached>
-				if (ds.getAlliance() == DriverStation.Alliance.Red)  mode1 |= 0b10000000;
-				if (ds.getAlliance() == DriverStation.Alliance.Blue) mode1 |= 0b01000000;
-				if (ds.isFMSAttached())                              mode1 |= 0b00100000;
-				if (ds.isAutonomous())                               mode1 |= 0b00010000;
-				if (ds.isOperatorControl())                          mode1 |= 0b00001000;
-				if (ds.isDisabled())                                 mode1 |= 0b00000100;
-				if (ds.isEnabled())                                  mode1 |= 0b00000010;
-				if (ds.isDSAttached())                               mode1 |= 0b00000001;
+			if (arduinoTimer.get() > arduinotimersp) { // send every 200msec to avoid buffer overflows
+				byte mode1 = 0;  //////// structure: 0b<red><blue><fms><auton><teleop><disabled><enabled><attached>
+				if (ds.getAlliance() == DriverStation.Alliance.Red)  mode1 |= 0b10000000; // on the red alliance
+				if (ds.getAlliance() == DriverStation.Alliance.Blue) mode1 |= 0b01000000; // blue alliance
+				if (ds.isFMSAttached())                              mode1 |= 0b00100000; // FMS (on the field) or just at home on a computer
+				if (ds.isAutonomous())                               mode1 |= 0b00010000; // auton mode
+				if (ds.isOperatorControl())                          mode1 |= 0b00001000; // teleop mode
+				if (ds.isDisabled())                                 mode1 |= 0b00000100; // disabled (idk what this actually means)
+				if (ds.isEnabled())                                  mode1 |= 0b00000010; // enabled and running
+				if (ds.isDSAttached())                               mode1 |= 0b00000001; // might not even work if it's not connected
 				
-				byte[] mode2 = {mode1}; // whyyyyyyyyy
-				arduino.write(mode2, 1);
+				//byte[] mode2 = {mode1}; arduino.write(mode2, 1);
+				arduino.sendbyte(mode1); // send the byte of status over
 				
-				arduinoTimer.reset();
+				arduinoTimer.reset(); // reset the timer so we can 
 				arduinoTimer.start();  //probably don't need to do this
 			}
-		} catch (RuntimeException a) { }
+		} catch (RuntimeException a) { } // catch I2C errors
 	}
 }
