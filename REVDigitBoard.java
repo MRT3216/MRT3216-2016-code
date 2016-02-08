@@ -200,5 +200,3 @@ public class REVDigitBoard { // wrapper for REV digit board
 	}
 	
 }
-
-
