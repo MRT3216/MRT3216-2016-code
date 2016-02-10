@@ -7,24 +7,24 @@ import java.util.Map;
 public class Settings {
 	/// static stuff
 	//static ArrayList<Settings> settings = new ArrayList<Settings>();
-	static Map<String,Settings> settings = new HashMap<String,Settings>();
-	static Preferences pref = Preferences.getInstance(); // settings (nonvolatile)
+	static Map<String,Settings> settings = new HashMap<String,Settings>(); // hold a list of settings
+	static Preferences pref = Preferences.getInstance(); // combines nonvolatle memory and networktables
 	
 	static void sync() {
-		for (Settings s:settings.values()) {
+		for (Settings s:settings.values()) { // sync all the settings
 			s._sync();
 		}
 	}
 	
-	static void add(String name, double def) {
+	static void add(String name, double def) { // add a setting with the default value
 		Settings temp = new Settings(name,def);
 		settings.put(name, temp);
 	}
 	
-	static double get(String name) {
+	static double get(String name) { // get a setting
 		Settings temp = settings.get(name);
 		if (temp == null) {
-			return 0;
+			return 0; // not in the array = 0 i guess
 		} else {
 			return temp.value;
 		}

@@ -23,7 +23,7 @@ public class TimedDoubleSolenoid {
 	DoubleSolenoid solenoid;
 	Timer timer;
 	
-	TimedDoubleSolenoid(int a, int b) {
+	TimedDoubleSolenoid(int a, int b) { // init with the two solenoid channels 
 		this.solenoid = new DoubleSolenoid(a,b);
 		this.timer = new Timer();
 	}
@@ -39,7 +39,7 @@ public class TimedDoubleSolenoid {
 	}
 	
 	void _run() {
-		if (this.timer.get() > Settings.get("solenoidtimersp")) { 
+		if (this.timer.get() > Settings.get("solenoidtimersp")) { // global timer setpoint
 			solenoid.set(DoubleSolenoid.Value.kOff);
 			this.timer.stop();
 			this.timer.reset();

@@ -6,7 +6,7 @@ public class Arduino { // simple wrapper class to help with single-byte arduino 
 	I2C i2c;
 	
 	Arduino(byte addr) {
-		i2c = new I2C(I2C.Port.kOnboard,addr); // onboard i2c is the one next to the power in on the roborio
+		i2c = new I2C(I2C.Port.kOnboard,addr); // onboard i2c is the one next to the power and CAN on the roborio
 	}
 	void sendbyte(byte a) {
 		byte[] b = {a}; // make an array, because java

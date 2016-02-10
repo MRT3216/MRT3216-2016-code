@@ -6,7 +6,7 @@ public class MovingAverage {
 	double[] readings; // stores the values from the rangefinder
 	int index; // location within the array to store the value
 	double r_average; // smoothed value
-	double total;
+	double total; // running total
 	
 	MovingAverage(int num) {
 		this.numreadings = num; // init everything

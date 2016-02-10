@@ -2,6 +2,7 @@ package org.usfirst.frc.team3216.robot;
 // all them imports:
 import edu.wpi.first.wpilibj.*;
 import edu.wpi.first.wpilibj.networktables.NetworkTable;
+
 import com.ni.vision.NIVision;
 
 public class Robot extends IterativeRobot {
@@ -14,17 +15,17 @@ public class Robot extends IterativeRobot {
 	DriverStation ds; // getting DS state, other info
 	NetworkTable table; // sending data back & forth for sensors
 	
-	VictorSP leftdrive,rightdrive; // y-cable thiede outputs to the two speed controllers (2 motors per side)
+	VictorSP leftdrive,rightdrive; // y-cable these outputs to the two speed controllers (2 motors per side)
 	TimedDoubleSolenoid shift; // connect the two shifter pneumatic actuators in parallel
 	Victor ballmotor; // motor to push/pull ball in and out
 	TimedDoubleSolenoid ballholder; // two parallel pneumatic actuators to lift ball and hold it in place
 	
 	AnalogInput range, leftpressure, rightpressure; // range = analog out of ultrasonic rangefinder, *pressure = analog pressure resistors on the front
 	Timer arduinoTimer, gearTimer, ballTimer; // timers for handling timed events
-	DigitalInput balllimit; // limit switch to tell if the ball has been taken in all the way
+	AnalogInput balllimit; // limit switch to tell if the ball has been taken in all the way
 	Servo lballservo,rballservo; // two servos that close to hold the ball in place
 	
-	REVDigitBoard disp; // digit board connected to MXP
+	REVDigitBoard disp; // digit board connected to MXP 
 	//SerialPort arduino; // this never worked
 	Arduino arduino; // wrapper class to make I2C setup easier
 	MovingAverage rangefinder; // smooth spikes in the rangefinder input by averaging the last several samples
@@ -47,10 +48,10 @@ public class Robot extends IterativeRobot {
 	 * pressure sensors on front: analog 2&3
 	 * 
 	 * ball holder: solenoid 2&3
-	 * ball motor: voctor on pwm 2
+	 * ball motor: victor on pwm 2
 	 * left ball holder: servo on pwm 3
 	 * right ball holder: servo on pwm 4
-	 * ball limit switch: digital input 0
+	 * ball limit switch: analog input 1
 	 * 
 	 * rev digit board on MXP
 	 * onboard i2c to an arduino
@@ -73,6 +74,7 @@ public class Robot extends IterativeRobot {
 		Settings.add("solenoidtimersp", 0.3); // timer for gearshift delay (in seconds)
 		Settings.add("arduinotimersp", 0.2); // send data to arduino every x seconds
 		Settings.add("balltimersp", 0.3); // seconds to spin up motors before ejecting ball
+		Settings.add("balllimitsp", 400); // analog value for when to trigger the ball holding machanism (0-1024)
 		Settings.add("servoopen", 130); // degrees to open the servos when not holding the ball
 		Settings.add("servoclose", 70); // degrees to close servos when holding the ball
 		
@@ -91,7 +93,7 @@ public class Robot extends IterativeRobot {
 		ballmotor = new Victor(2); // ball suck/eject motor = pwm 2
 		lballservo = new Servo(3); // left-side servo to hold ball
 		rballservo = new Servo(4); // right-side servo to hold ball
-		balllimit = new DigitalInput(0); // mechanical or light-based limit switch
+		balllimit = new AnalogInput(1); // mechanical or light-based limit switch
 		
 		range = new AnalogInput(0); // analog rangefinder
 		rangefinder = new MovingAverage(5,250); // moving average for rangefinder (samples, start value)
@@ -115,14 +117,13 @@ public class Robot extends IterativeRobot {
 		
 		pcm.setClosedLoopControl(true); // this is now done programatically by the pneumatics module
 		
-		// set up the camera multiplex system (DISABLED)
-		/*  curframe = NIVision.imaqCreateImage(NIVision.ImageType.IMAGE_RGB, 0); // blank image (placeholder)
-		for (int i = 0; i < numcameras; i++) {
+		// set up the camera multiplex system 
+		curframe = NIVision.imaqCreateImage(NIVision.ImageType.IMAGE_RGB, 0); // blank image (placeholder)
+		for (int i = 0; i < numcameras; i++) 
 			cameras[i] = NIVision.IMAQdxOpenCamera("cam" + (i+1), NIVision.IMAQdxCameraControlMode.CameraControlModeController); // get the camera ID
-			NIVision.IMAQdxConfigureGrab(cameras[i]); // turn it on
-		}
 		curcamera = 0;
-		cserver = CameraServer.getInstance(); // get the instance */
+		NIVision.IMAQdxConfigureGrab(curcamera); // turn it on
+		cserver = CameraServer.getInstance(); // get the instance 
 		
 		autonstart = false; // make sure these are false for the third time 
 		autonend = false;
@@ -133,13 +134,12 @@ public class Robot extends IterativeRobot {
 		sendData(); // this also does the moving average stuff
 		
 		if (!autonstart) {
-			// TODO: set up the stuff
-			ballholder.forward(); // open the ball holder
-			openServos();
+			ballholder.backward(); // close the ball holder
+			closeServos();
 			autonstart = true;
 		} else if (autonstart && !autonend) {
 			double speed = 0.5; //map(a_range, 0, 200, 0, 1)*0.5+0.1; // this was a variable speed formula but it didn't work
-			if (rangefinder.getAverage() < Settings.get("autondistsp")) {
+			if (rangefinder.getAverage() > Settings.get("autondistsp")) { // if more than setpoint distance
 				drive(speed,speed);
 			} else {
 				autonend = true;
@@ -152,6 +152,7 @@ public class Robot extends IterativeRobot {
 	// variables used in teleop:
 	double leftstick, rightstick, triggerr, triggerl, pressurer, pressurel; // these are data points pulled off the xbox controller
 	boolean buttonl, buttonr, limit; // also xbox controller stuff
+	boolean lastbuttonr; // for debouncing the camera toggle
 	// This function is called periodically during operator control
 	public void teleopPeriodic() {
 		// this took a lot of guess-and-check, since several 
@@ -169,13 +170,16 @@ public class Robot extends IterativeRobot {
 		pressurer = rightpressure.getVoltage(); // get the voltage from the force-sensitive resistors
 		pressurel = leftpressure.getVoltage();
 		
-		limit = balllimit.get();
+		limit = balllimit.getValue() < Settings.get("ballimitsp"); // decreases when the ball gets closer; setpoint is 0-1024
 		
-		drive(leftstick,rightstick); // drive function
+		drive(leftstick, rightstick); // drive function
 		
 		manageGears(pressurel, pressurer, buttonl); // gearshift logic code
 		
-		manageBall(triggerl-triggerr,limit); // ball logic and timing code
+		manageBall(triggerl-triggerr, limit); // ball logic and timing code
+		
+		if (buttonr && !lastbuttonr) switchCamera(); // right bumper switches cameras
+		lastbuttonr = buttonr; // store this so we don't continuously switch while the button is held
 		
 		sendData(); // periodic function
 	}
@@ -184,7 +188,7 @@ public class Robot extends IterativeRobot {
 	 * 
 	 * drive(double left_joystick, double right_joystick) : moves the motors, handles deadzone and ideally reversing stuff
 	 * manageGears(double analog_pressure_left, double analog_pressure_right, boolean override_switch) : automatic gearshifting with manual override
-	 * manageBall(double direction) : moves the ball in or out (probably just a motor controller)
+	 * manageBall(double direction, boolean limit) : moves the ball in or out (probably just a motor controller)
 	 */
 	
 	//////////////////////////////// various management functions
@@ -228,6 +232,7 @@ public class Robot extends IterativeRobot {
 			ballmotor.set(0); // stop the motor, and stop the timers (TODO: fix)
 			timerRunning = false;
 			ballTimer.stop();
+			ballTimer.reset();
 			eject = false;
 			intake = false;
 		}
@@ -296,25 +301,26 @@ public class Robot extends IterativeRobot {
 	// this kinda became the all-encompassing function to handle periodic tasks.
 	void sendData() {
 		//moving average for rangefinder
-		double a_range = range.getVoltage() / (5.0/1024.0); // centimeters hopefully
+		double a_range = range.getValue();; // centimeters hopefully
 		rangefinder.newSample(a_range);
 		
 		TimedDoubleSolenoid.run(); // run all the solenoids
 		
-		Settings.sync();
+		Settings.sync(); // this syncs local sttings with the NetworkTable and the DS config utility
 		
 		syncSensors();
 		
 		//digit board
 		try {
-			disp.display(ds.getBatteryVoltage()); //live voltage readout ideally, or whatever we need
+			disp.display(ControllerPower.getInputVoltage()); //live voltage readout ideally, or whatever we need
 		} catch (RuntimeException a) { } // to handle I2C errors?
 		
 		// now do light stuff
 		runLights();
 		
-		// manage camera MUX
-		//switchCamera();
+		// manage camera 
+		NIVision.IMAQdxGrab(cameras[curcamera], curframe, 1); // copy the image
+		cserver.setImage(curframe); // I hope this doesn't lag anything
 	}
 	
 	void runLights() {
@@ -340,11 +346,9 @@ public class Robot extends IterativeRobot {
 	}
 	
 	void switchCamera() {
-		//NIVision.IMAQdxStopAcquisition(cameras[curcamera]); // stop current camera (might actually not want to start/stop so often
+		NIVision.IMAQdxStopAcquisition(cameras[curcamera]); // stop current camera (might actually not want to start/stop so often
 		curcamera += 1; curcamera %= numcameras; // advance counter
-		//NIVision.IMAQdxConfigureGrab(cameras[curcamera]); // start new camera (disabled)
-		NIVision.IMAQdxGrab(cameras[curcamera], curframe, 1); // copy the image
-		cserver.setImage(curframe); // I hope this doesn't lag anything
+		NIVision.IMAQdxConfigureGrab(cameras[curcamera]); // start new camera (disabled)
 	}
 	
 	void syncSensors() {
@@ -352,11 +356,12 @@ public class Robot extends IterativeRobot {
 			table.putNumber("pwr_v",pdp.getVoltage()); // PDP voltage (not the same as DS voltage)
 			table.putNumber("pwr_t",pdp.getTemperature()); // useful to tell if there are things heating up
 			table.putNumber("pwr_c",pdp.getTotalCurrent()); // total current draw
-			for (int i = 0; i < 16; i++) 
-				table.putNumber("pwr_c_" + i,pdp.getCurrent(i)); // current draw for all 16 channels
+			for (int i = 0; i < 16; i++) table.putNumber("pwr_c_" + i,pdp.getCurrent(i)); // current draw for all 16 channels
 			table.putNumber("pcm_c",pcm.getCompressorCurrent()); // compressor current draw
-			//table.putNumber("range",a_range); // rangefinder raw
-			table.putNumber("range_smooth",rangefinder.getAverage()); // averaged rangefinder value
+			table.putNumber("range",rangefinder.getAverage()); // averaged rangefinder value
+			table.putNumber("ctl_v",ControllerPower.getInputVoltage()); // roborio voltage
+			table.putNumber("ctl_c",ControllerPower.getInputCurrent()); // roborio current draw
+			table.putNumber("ctl_fault",ControllerPower.getFaultCount3V3()+ControllerPower.getFaultCount5V()+ControllerPower.getFaultCount6V()); // total voltage fault count
 		} catch (RuntimeException a) { } // runtime exception could be caused by CAN timeout
 	}
 }
