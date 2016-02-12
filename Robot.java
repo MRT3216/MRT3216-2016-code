@@ -87,13 +87,13 @@ public class Robot extends IterativeRobot {
 		
 		leftdrive = new VictorSP(0); // left motors = pwm 0
 		rightdrive = new VictorSP(1); // right motors = pwm 1
-		shift = new TimedDoubleSolenoid(0,1); // shifter pneumtics on solenoid 0,1
+		shift = new TimedDoubleSolenoid(1,0); // shifter pneumtics on solenoid 0,1
 		
 		ballholder = new TimedDoubleSolenoid(2,3); // ball holder pneumatics on solenoid 2,3
 		ballmotor = new Victor(2); // ball suck/eject motor = pwm 2
 		lballservo = new Servo(3); // left-side servo to hold ball
 		rballservo = new Servo(4); // right-side servo to hold ball
-		balllimit = new AnalogInput(1); // mechanical or light-based limit switch
+		balllimit = new AnalogInput(4); // mechanical or light-based limit switch
 		
 		range = new AnalogInput(0); // analog rangefinder
 		rangefinder = new MovingAverage(5,250); // moving average for rangefinder (samples, start value)
@@ -116,7 +116,7 @@ public class Robot extends IterativeRobot {
 		ballTimer = new Timer(); // timer for ball pneumatics (same reason as gear)
 		
 		pcm.setClosedLoopControl(true); // this is now done programatically by the pneumatics module
-		
+		/*
 		// set up the camera multiplex system 
 		curframe = NIVision.imaqCreateImage(NIVision.ImageType.IMAGE_RGB, 0); // blank image (placeholder)
 		for (int i = 0; i < numcameras; i++) 
@@ -124,7 +124,7 @@ public class Robot extends IterativeRobot {
 		curcamera = 0;
 		NIVision.IMAQdxConfigureGrab(curcamera); // turn it on
 		cserver = CameraServer.getInstance(); // get the instance 
-		
+		*/
 		autonstart = false; // make sure these are false for the third time 
 		autonend = false;
 	}
@@ -136,6 +136,7 @@ public class Robot extends IterativeRobot {
 		if (!autonstart) {
 			ballholder.backward(); // close the ball holder
 			closeServos();
+			manageGears(0,0,false); // set high gear
 			autonstart = true;
 		} else if (autonstart && !autonend) {
 			double speed = 0.5; //map(a_range, 0, 200, 0, 1)*0.5+0.1; // this was a variable speed formula but it didn't work
@@ -159,7 +160,7 @@ public class Robot extends IterativeRobot {
 		// axes were messed up this year. don't trust the 
 		// joystick explorer, use the DS for testing these
 		leftstick = xBox.getRawAxis(1); // these are supposed to be the vertical axes (for tank drive)
-		rightstick = xBox.getRawAxis(3);
+		rightstick = xBox.getRawAxis(5); // checked
 		
 		buttonl = xBox.getRawButton(6); // left bumper overrides the gearshift and forces it into low gear (high by default)
 		buttonr = xBox.getRawButton(5); 
@@ -170,16 +171,18 @@ public class Robot extends IterativeRobot {
 		pressurer = rightpressure.getVoltage(); // get the voltage from the force-sensitive resistors
 		pressurel = leftpressure.getVoltage();
 		
-		limit = balllimit.getValue() < Settings.get("ballimitsp"); // decreases when the ball gets closer; setpoint is 0-1024
+		//limit = balllimit.getValue() < Settings.get("ballimitsp"); // decreases when the ball gets closer; setpoint is 0-1024
+		limit = false;
 		
-		drive(leftstick, rightstick); // drive function
+		drive(leftstick, -rightstick); // drive function
 		
 		manageGears(pressurel, pressurer, buttonl); // gearshift logic code
 		
 		manageBall(triggerl-triggerr, limit); // ball logic and timing code
 		
-		if (buttonr && !lastbuttonr) switchCamera(); // right bumper switches cameras
+		/*if (buttonr && !lastbuttonr) switchCamera(); // right bumper switches cameras
 		lastbuttonr = buttonr; // store this so we don't continuously switch while the button is held
+		*/
 		
 		sendData(); // periodic function
 	}
@@ -210,7 +213,7 @@ public class Robot extends IterativeRobot {
 	boolean timerRunning = false; // for some reason, timers don't have a field to figure this out
 	boolean intake = false;
 	boolean eject = false;
-	
+	/*
 	void manageBall(double direction, boolean limit) {
 		// positive values eject, negative values intake
 		// ideally ballholder.forward will open it
@@ -230,9 +233,9 @@ public class Robot extends IterativeRobot {
 			intake = false;
 		} else {
 			ballmotor.set(0); // stop the motor, and stop the timers (TODO: fix)
-			timerRunning = false;
 			ballTimer.stop();
 			ballTimer.reset();
+			timerRunning = false;
 			eject = false;
 			intake = false;
 		}
@@ -243,6 +246,7 @@ public class Robot extends IterativeRobot {
 			ballTimer.stop(); // stop and reset timer
 			ballTimer.reset();
 			timerRunning = false;
+			eject = false;
 		}
 		//// for intake mode, we need to wait until the limit is triggered and then lift the plate, and then wait a sec and close the servos
 		if (timerRunning && intake && limit && ballTimer.get() > Settings.get("balltimersp")) {
@@ -250,6 +254,7 @@ public class Robot extends IterativeRobot {
 			ballTimer.stop(); // and reset the variables
 			ballTimer.reset();
 			timerRunning = false;
+			intake = false;
 		} else if (intake && limit) { // if limit switch is tripped and intaking
 			if (!timerRunning) { 
 				ballTimer.start(); // if timer hasn't started, start it
@@ -257,6 +262,23 @@ public class Robot extends IterativeRobot {
 				ballholder.backward(); // and lift the plate as soon as the limit is tripped
 			}
 		}
+	}*/
+	
+	void manageBall(double direction, boolean limit) {
+		// positive values eject, negative values intake
+		// ideally ballholder.forward will open it
+		if (direction < -Settings.get("deadzonesp")) { // if the ball is coming in
+			openServos(); // open servos to accept the ball
+			ballholder.forward(); // drop the plate
+			ballmotor.set(direction); // spin up the motor in reverse to intake
+		} else if (direction > Settings.get("deadzonesp")) {
+			ballmotor.set(direction); // spin up the motor to eject
+			closeServos();
+			ballholder.backward();
+		} else {
+			ballmotor.set(0); 
+		}
+		
 	}
 	
 	boolean lastgear = true; // true = high, false = low gear
@@ -308,7 +330,7 @@ public class Robot extends IterativeRobot {
 		
 		Settings.sync(); // this syncs local sttings with the NetworkTable and the DS config utility
 		
-		syncSensors();
+		//syncSensors();
 		
 		//digit board
 		try {
@@ -317,10 +339,10 @@ public class Robot extends IterativeRobot {
 		
 		// now do light stuff
 		runLights();
-		
+		/*
 		// manage camera 
 		NIVision.IMAQdxGrab(cameras[curcamera], curframe, 1); // copy the image
-		cserver.setImage(curframe); // I hope this doesn't lag anything
+		cserver.setImage(curframe); // I hope this doesn't lag anything*/
 	}
 	
 	void runLights() {
