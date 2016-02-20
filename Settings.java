@@ -1,6 +1,7 @@
 package org.usfirst.frc.team3216.robot;
 
 import edu.wpi.first.wpilibj.Preferences;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -16,8 +17,8 @@ public class Settings {
 		}
 	}
 	
-	static void add(String name, double def) { // add a setting with the default value
-		Settings temp = new Settings(name,def);
+	static void add(String name, double def, double mi, double ma) { // add a setting with the default value
+		Settings temp = new Settings(name,def,mi,ma);
 		settings.put(name, temp);
 	}
 	
@@ -30,22 +31,33 @@ public class Settings {
 		}
 	}
 	
+	static void reset() { // danger: clears entire table!!
+		for (Object i: pref.getKeys()) {
+			pref.remove((String)i);
+		}
+	}
+	
 	/// dynamic stuff
 	double value; // all the values are doubles for ease of use
 	double defv; // default value
+	double min,max; // limits
 	String name; // name of setting
 	
-	Settings(String name, double def) { // this isn't supposed to be publicly instantiated
+	Settings(String name, double def, double min, double max) { // this isn't supposed to be publicly instantiated
 		this.name = name;
 		this.defv = def;
-		if (!pref.containsKey(name)) {
-			pref.putDouble(name,defv);
+		this.min = min;
+		this.max = max;
+		if (!pref.containsKey(name + "_val")) {
+			pref.putDouble(name + "_val",defv);
 		}
+		pref.putDouble(name + "_min",min);
+		pref.putDouble(name + "_max",max);
 		this._sync();
 	}
 	
 	void _sync() {
-		double temp = pref.getDouble(this.name, this.defv);
+		double temp = pref.getDouble(this.name + "_val", this.defv);
 		if (this.value != temp) this.value = temp;
 	}
 }

@@ -32,7 +32,7 @@ public class REVDigitBoard { // wrapper for REV digit board
 		i2c = new I2C(Port.kMXP, 0x70); // i2c address 0x70
 		buttonA = new DigitalInput(19); // and the buttons
 		buttonB = new DigitalInput(20);
-		pot = new AnalogInput(3); // and the potentiometer
+		pot = new AnalogInput(4); // and the potentiometer
 		
 		byte[] osc = new byte[1]; // idk what this part does, probably initialization
 	 	byte[] blink = new byte[1];

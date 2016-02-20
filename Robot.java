@@ -21,7 +21,7 @@ public class Robot extends IterativeRobot {
 	TimedDoubleSolenoid ballholder; // two parallel pneumatic actuators to lift ball and hold it in place
 	
 	AnalogInput range, leftpressure, rightpressure; // range = analog out of ultrasonic rangefinder, *pressure = analog pressure resistors on the front
-	Timer arduinoTimer, gearTimer, ballTimer; // timers for handling timed events
+	Timer arduinoTimer, gearTimer, ballTimer, liftTimer; // timers for handling timed events
 	AnalogInput balllimit; // limit switch to tell if the ball has been taken in all the way
 	Servo lballservo,rballservo; // two servos that close to hold the ball in place
 	
@@ -30,7 +30,7 @@ public class Robot extends IterativeRobot {
 	Arduino arduino; // wrapper class to make I2C setup easier
 	MovingAverage rangefinder; // smooth spikes in the rangefinder input by averaging the last several samples
 	
-	final int numcameras = 2; // we've got this many cameras
+	final int numcameras = 1; // we've got this many cameras
 	int[] cameras; // array of camera indices
 	int curcamera; // current camera index 
 	NIVision.Image curframe; // current frame to stream to camera
@@ -67,16 +67,20 @@ public class Robot extends IterativeRobot {
 	
 	public void robotInit() {
 		/// prefs: here we instantiate values and stuff
-		Settings.add("pressuresp", 10);// setpoint for pressure sensors to trigger the automatic low gear switch
-		Settings.add("autondistsp", 250); // distance to move in autonomous (cm iirc)
-		Settings.add("deadzonesp", 0.15); // deadzone in joysticks
-		Settings.add("triggerdzsp", 0.15); // trigger deadzone
-		Settings.add("solenoidtimersp", 0.3); // timer for gearshift delay (in seconds)
-		Settings.add("arduinotimersp", 0.2); // send data to arduino every x seconds
-		Settings.add("balltimersp", 0.3); // seconds to spin up motors before ejecting ball
-		Settings.add("balllimitsp", 400); // analog value for when to trigger the ball holding machanism (0-1024)
-		Settings.add("servoopen", 130); // degrees to open the servos when not holding the ball
-		Settings.add("servoclose", 70); // degrees to close servos when holding the ball
+		Settings.add("pressure", 10,0,1024);// setpoint for pressure sensors to trigger the automatic low gear switch
+		Settings.add("autondist", 250,0,1024); // distance to move in autonomous (cm iirc)
+		Settings.add("deadzone", 0.07,0,1); // deadzone in joysticks
+		Settings.add("triggerdz", 0.07,0,1); // trigger deadzone
+		Settings.add("solenoidtimer", 0.3,0,1); // timer for gearshift delay (in seconds)
+		Settings.add("arduinotimer", 0.2,0,3); // send data to arduino every x seconds
+		Settings.add("balltimer", 0.3,0,3); // seconds to spin up motors before ejecting ball
+		Settings.add("balllimit", 1000,0,4000); // analog value for when to trigger the ball holding machanism 
+		Settings.add("servoopen", 130,0,180); // degrees to open the servos when not holding the ball
+		Settings.add("servoclose", 50,0,180); // degrees to close servos when holding the ball
+		Settings.add("autonspeed", 0.5, 0, 1); // speed to drive in auton
+		Settings.add("motormap", 0.7, 0, 1); // motor slow down factor
+		Settings.add("ballmotormap", 0.7, 0, 1);
+		Settings.add("lifttimer", 0.6, 0.1, 4);
 		
 		/// now we set up the obects
 		xBox = new Joystick(0); // joystick port 0
@@ -89,11 +93,11 @@ public class Robot extends IterativeRobot {
 		rightdrive = new VictorSP(1); // right motors = pwm 1
 		shift = new TimedDoubleSolenoid(1,0); // shifter pneumtics on solenoid 0,1
 		
-		ballholder = new TimedDoubleSolenoid(2,3); // ball holder pneumatics on solenoid 2,3
+		ballholder = new TimedDoubleSolenoid(3,2); // ball holder pneumatics on solenoid 2,3
 		ballmotor = new Victor(2); // ball suck/eject motor = pwm 2
 		lballservo = new Servo(3); // left-side servo to hold ball
 		rballservo = new Servo(4); // right-side servo to hold ball
-		balllimit = new AnalogInput(4); // mechanical or light-based limit switch
+		balllimit = new AnalogInput(3); // mechanical or light-based limit switch
 		
 		range = new AnalogInput(0); // analog rangefinder
 		rangefinder = new MovingAverage(5,250); // moving average for rangefinder (samples, start value)
@@ -114,17 +118,20 @@ public class Robot extends IterativeRobot {
 		arduinoTimer = new Timer(); // timer to send data to the arduino at intervals to no flood the buffers
 		arduinoTimer.start(); // start it so we can send data
 		ballTimer = new Timer(); // timer for ball pneumatics (same reason as gear)
+		liftTimer = new Timer();
 		
 		pcm.setClosedLoopControl(true); // this is now done programatically by the pneumatics module
-		/*
+		
 		// set up the camera multiplex system 
+		try {
 		curframe = NIVision.imaqCreateImage(NIVision.ImageType.IMAGE_RGB, 0); // blank image (placeholder)
 		for (int i = 0; i < numcameras; i++) 
 			cameras[i] = NIVision.IMAQdxOpenCamera("cam" + (i+1), NIVision.IMAQdxCameraControlMode.CameraControlModeController); // get the camera ID
 		curcamera = 0;
 		NIVision.IMAQdxConfigureGrab(curcamera); // turn it on
-		cserver = CameraServer.getInstance(); // get the instance 
-		*/
+		cserver = CameraServer.getInstance(); // get the instance
+		} catch (Exception e) { }
+		
 		autonstart = false; // make sure these are false for the third time 
 		autonend = false;
 	}
@@ -140,7 +147,7 @@ public class Robot extends IterativeRobot {
 			autonstart = true;
 		} else if (autonstart && !autonend) {
 			double speed = 0.5; //map(a_range, 0, 200, 0, 1)*0.5+0.1; // this was a variable speed formula but it didn't work
-			if (rangefinder.getAverage() > Settings.get("autondistsp")) { // if more than setpoint distance
+			if (rangefinder.getAverage() > Settings.get("autondist")) { // if more than setpoint distance
 				drive(speed,speed);
 			} else {
 				autonend = true;
@@ -148,6 +155,11 @@ public class Robot extends IterativeRobot {
 		} else if (autonend) {
 			drive(0,0);
 		}
+	}
+	
+	public void teleopInit() {
+		ballholder.backward();
+		closeServos();
 	}
 
 	// variables used in teleop:
@@ -171,8 +183,13 @@ public class Robot extends IterativeRobot {
 		pressurer = rightpressure.getVoltage(); // get the voltage from the force-sensitive resistors
 		pressurel = leftpressure.getVoltage();
 		
-		//limit = balllimit.getValue() < Settings.get("ballimitsp"); // decreases when the ball gets closer; setpoint is 0-1024
-		limit = false;
+		limit = balllimit.getValue() > Settings.get("balllimit"); // inreases when the ball gets closer; setpoint is 0-1024
+		//limit = false;
+		
+		if (buttonr) {
+			ballholder.backward();
+			closeServos();
+		}
 		
 		drive(leftstick, -rightstick); // drive function
 		
@@ -197,14 +214,14 @@ public class Robot extends IterativeRobot {
 	//////////////////////////////// various management functions
 	
 	void drive(double left, double right) {
-		if (Math.abs(left) > Settings.get("deadzonesp")) { // deadzone the motors
-			leftdrive.set(left);
+		if (Math.abs(left) > Settings.get("deadzone")) { // deadzone the motors
+			leftdrive.set(Math.pow(left,3)*Settings.get("motormap")); // cubic motor map
 		} else {
 			leftdrive.set(0);
 		}
 		
-		if (Math.abs(right) > Settings.get("deadzonesp")) {
-			rightdrive.set(right);
+		if (Math.abs(right) > Settings.get("deadzone")) {
+			rightdrive.set(Math.pow(right,3)*Settings.get("motormap"));
 		} else {
 			rightdrive.set(0);
 		}
@@ -213,79 +230,81 @@ public class Robot extends IterativeRobot {
 	boolean timerRunning = false; // for some reason, timers don't have a field to figure this out
 	boolean intake = false;
 	boolean eject = false;
-	/*
+	boolean close = false;
+	
 	void manageBall(double direction, boolean limit) {
 		// positive values eject, negative values intake
 		// ideally ballholder.forward will open it
-		if (direction < -Settings.get("deadzonesp")) { // if the ball is coming in
-			openServos(); // open servos to accept the ball
-			ballholder.forward(); // drop the plate
-			ballmotor.set(direction); // spin up the motor in reverse to intake
+		// this is really messy logic
+		if (direction < -Settings.get("deadzone")) { // if the ball is coming in
+			if (!timerRunning) {
+				ballholder.forward(); // drop the plate
+				openServos(); // open servos to accept the ball
+			}
+			ballmotor.set(direction*Settings.get("ballmotormap")); // spin up the motor in reverse to intake
 			intake = true; // set these values 
 			eject = false;
-		} else if (direction > Settings.get("deadzonesp")) {
-			ballmotor.set(direction); // spin up the motor to eject
+			close = false;
+		} else if (direction > Settings.get("deadzone")) {
+			ballmotor.set(direction*Settings.get("ballmotormap")); // spin up the motor to eject
 			if (!timerRunning) { // to time the ball holder: it needs to spin up the motors before the holder drops the ball for maximum speed ejection
 				ballTimer.start();
 				timerRunning = true;
 			}
 			eject = true; // set these
 			intake = false;
+			close = false;
 		} else {
 			ballmotor.set(0); // stop the motor, and stop the timers (TODO: fix)
-			ballTimer.stop();
-			ballTimer.reset();
-			timerRunning = false;
-			eject = false;
-			intake = false;
+			if (!intake) {
+				eject = false;
+				timerRunning = false;
+				ballTimer.stop();
+				ballTimer.reset();
+			}
+			//intake = false;
+			if (!close) {
+				liftTimer.reset();
+				liftTimer.start();
+				close = true;
+			}
 		}
 		//// for the eject mode, we want to spin up the motors and wait a sec to eject the ball
-		if (timerRunning && eject && ballTimer.get() > Settings.get("balltimersp")) { // if waiting to eject, and time has passed
+		if (timerRunning && eject && ballTimer.get() > Settings.get("balltimer")) { // if waiting to eject, and time has passed
 			openServos(); // open holder servos
 			ballholder.forward(); // drop the plate
 			ballTimer.stop(); // stop and reset timer
 			ballTimer.reset();
 			timerRunning = false;
-			eject = false;
+			eject = false; 
 		}
 		//// for intake mode, we need to wait until the limit is triggered and then lift the plate, and then wait a sec and close the servos
-		if (timerRunning && intake && limit && ballTimer.get() > Settings.get("balltimersp")) {
+		if (timerRunning && intake && ballTimer.get() > Settings.get("balltimer")) {
 			closeServos(); // close the servos after the timer has expired
 			ballTimer.stop(); // and reset the variables
-			ballTimer.reset();
-			timerRunning = false;
-			intake = false;
+			//timerRunning = false;
+			//intake = false;
 		} else if (intake && limit) { // if limit switch is tripped and intaking
 			if (!timerRunning) { 
+				ballTimer.reset();
 				ballTimer.start(); // if timer hasn't started, start it
 				timerRunning = true;
 				ballholder.backward(); // and lift the plate as soon as the limit is tripped
 			}
 		}
-	}*/
-	
-	void manageBall(double direction, boolean limit) {
-		// positive values eject, negative values intake
-		// ideally ballholder.forward will open it
-		if (direction < -Settings.get("deadzonesp")) { // if the ball is coming in
-			openServos(); // open servos to accept the ball
-			ballholder.forward(); // drop the plate
-			ballmotor.set(direction); // spin up the motor in reverse to intake
-		} else if (direction > Settings.get("deadzonesp")) {
-			ballmotor.set(direction); // spin up the motor to eject
-			closeServos();
+		if (close && liftTimer.get() > Settings.get("lifttimer")) { // to automatically lift plate so it doesn't break off
 			ballholder.backward();
-		} else {
-			ballmotor.set(0); 
+			//closeServos();
+			liftTimer.stop(); // stop timer
+			close = false;
 		}
-		
 	}
-	
+
 	boolean lastgear = true; // true = high, false = low gear
 	
 	void manageGears(double lpressure, double rpressure, boolean override) {
 		// not sure what to do with the encoder/speed thing yet (double lencoder, double rencoder, double lspeed, double rspeed,) <-- add that in
-		boolean gear = !(lpressure > Settings.get("pressuresp") || rpressure > Settings.get("pressuresp") || override);
+		boolean gear = !(lpressure > Settings.get("pressure") || rpressure > Settings.get("pressure") || override);
 
 		if (gear != lastgear && gear) {
 			shift.forward();
@@ -330,7 +349,7 @@ public class Robot extends IterativeRobot {
 		
 		Settings.sync(); // this syncs local sttings with the NetworkTable and the DS config utility
 		
-		//syncSensors();
+		syncSensors();
 		
 		//digit board
 		try {
@@ -347,7 +366,7 @@ public class Robot extends IterativeRobot {
 	
 	void runLights() {
 		try {
-			if (arduinoTimer.get() > Settings.get("arduinotimersp")) { // send every 200msec to avoid buffer overflows
+			if (arduinoTimer.get() > Settings.get("arduinotimer")) { // send every 200msec to avoid buffer overflows
 				byte mode1 = 0;  //////// structure: 0b<red><blue><fms><auton><teleop><disabled><enabled><attached>
 				if (ds.getAlliance() == DriverStation.Alliance.Red)  mode1 |= 0b10000000; // on the red alliance
 				if (ds.getAlliance() == DriverStation.Alliance.Blue) mode1 |= 0b01000000; // blue alliance
@@ -384,6 +403,7 @@ public class Robot extends IterativeRobot {
 			table.putNumber("ctl_v",ControllerPower.getInputVoltage()); // roborio voltage
 			table.putNumber("ctl_c",ControllerPower.getInputCurrent()); // roborio current draw
 			table.putNumber("ctl_fault",ControllerPower.getFaultCount3V3()+ControllerPower.getFaultCount5V()+ControllerPower.getFaultCount6V()); // total voltage fault count
+			table.putNumber("inf_range",balllimit.getValue());
 		} catch (RuntimeException a) { } // runtime exception could be caused by CAN timeout
 	}
 }
