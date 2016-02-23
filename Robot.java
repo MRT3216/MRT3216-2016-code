@@ -3,8 +3,6 @@ package org.usfirst.frc.team3216.robot;
 import edu.wpi.first.wpilibj.*;
 import edu.wpi.first.wpilibj.networktables.NetworkTable;
 
-import com.ni.vision.NIVision;
-
 public class Robot extends IterativeRobot {
 	// setting up all the objects
 	// global objects:
@@ -21,21 +19,16 @@ public class Robot extends IterativeRobot {
 	TimedDoubleSolenoid ballholder; // two parallel pneumatic actuators to lift ball and hold it in place
 	
 	AnalogInput range, leftpressure, rightpressure; // range = analog out of ultrasonic rangefinder, *pressure = analog pressure resistors on the front
-	Timer arduinoTimer, gearTimer, ballTimer, liftTimer; // timers for handling timed events
+	Timer arduinoTimer, gearTimer, ballTimer, liftTimer, armTimer; // timers for handling timed events
 	AnalogInput balllimit; // limit switch to tell if the ball has been taken in all the way
 	Servo lballservo,rballservo; // two servos that close to hold the ball in place
+	Victor arms;
 	
 	REVDigitBoard disp; // digit board connected to MXP 
 	//SerialPort arduino; // this never worked
 	Arduino arduino; // wrapper class to make I2C setup easier
 	MovingAverage rangefinder; // smooth spikes in the rangefinder input by averaging the last several samples
-	
-	final int numcameras = 1; // we've got this many cameras
-	int[] cameras; // array of camera indices
-	int curcamera; // current camera index 
-	NIVision.Image curframe; // current frame to stream to camera
-	CameraServer cserver; // camera server instance
-	
+
 	static boolean autonstart = false, autonend = false; // to help handle the 3-stage auton: startup, periodic, end
 
 	/* Connections:
@@ -81,6 +74,8 @@ public class Robot extends IterativeRobot {
 		Settings.add("motormap", 0.7, 0, 1); // motor slow down factor
 		Settings.add("ballmotormap", 0.7, 0, 1);
 		Settings.add("lifttimer", 0.6, 0.1, 4);
+		Settings.add("armspeed", 0.4, 0, 1);
+		Settings.add("armtiming", 0.5, 0, 3);
 		
 		/// now we set up the obects
 		xBox = new Joystick(0); // joystick port 0
@@ -98,6 +93,7 @@ public class Robot extends IterativeRobot {
 		lballservo = new Servo(3); // left-side servo to hold ball
 		rballservo = new Servo(4); // right-side servo to hold ball
 		balllimit = new AnalogInput(3); // mechanical or light-based limit switch
+		arms = new Victor(6);
 		
 		range = new AnalogInput(0); // analog rangefinder
 		rangefinder = new MovingAverage(5,250); // moving average for rangefinder (samples, start value)
@@ -119,18 +115,9 @@ public class Robot extends IterativeRobot {
 		arduinoTimer.start(); // start it so we can send data
 		ballTimer = new Timer(); // timer for ball pneumatics (same reason as gear)
 		liftTimer = new Timer();
+		armTimer = new Timer();
 		
 		pcm.setClosedLoopControl(true); // this is now done programatically by the pneumatics module
-		
-		// set up the camera multiplex system 
-		try {
-		curframe = NIVision.imaqCreateImage(NIVision.ImageType.IMAGE_RGB, 0); // blank image (placeholder)
-		for (int i = 0; i < numcameras; i++) 
-			cameras[i] = NIVision.IMAQdxOpenCamera("cam" + (i+1), NIVision.IMAQdxCameraControlMode.CameraControlModeController); // get the camera ID
-		curcamera = 0;
-		NIVision.IMAQdxConfigureGrab(curcamera); // turn it on
-		cserver = CameraServer.getInstance(); // get the instance
-		} catch (Exception e) { }
 		
 		autonstart = false; // make sure these are false for the third time 
 		autonend = false;
@@ -164,7 +151,7 @@ public class Robot extends IterativeRobot {
 
 	// variables used in teleop:
 	double leftstick, rightstick, triggerr, triggerl, pressurer, pressurel; // these are data points pulled off the xbox controller
-	boolean buttonl, buttonr, limit; // also xbox controller stuff
+	boolean buttonl, buttonr, buttonx, buttona, limit, stickl, stickr; // also xbox controller stuff
 	boolean lastbuttonr; // for debouncing the camera toggle
 	// This function is called periodically during operator control
 	public void teleopPeriodic() {
@@ -176,30 +163,35 @@ public class Robot extends IterativeRobot {
 		
 		buttonl = xBox.getRawButton(6); // left bumper overrides the gearshift and forces it into low gear (high by default)
 		buttonr = xBox.getRawButton(5); 
+		buttonx = xBox.getRawButton(3);
+		buttona = xBox.getRawButton(1);
  
 		triggerl = xBox.getRawAxis(2); // these spin up the motor to inject/eject the boulder
 		triggerr = xBox.getRawAxis(3);	
 		
+		stickl = xBox.getRawButton(9);
+		stickl = xBox.getRawButton(10);
+		
 		pressurer = rightpressure.getVoltage(); // get the voltage from the force-sensitive resistors
 		pressurel = leftpressure.getVoltage();
 		
-		limit = balllimit.getValue() > Settings.get("balllimit"); // inreases when the ball gets closer; setpoint is 0-1024
-		//limit = false;
+		limit = balllimit.getValue() > Settings.get("balllimit"); // inreases when the ball gets closer
+		
+		manageArm(buttona,buttonx);
 		
 		if (buttonr) {
 			ballholder.backward();
 			closeServos();
 		}
 		
+		if (stickl) rightstick = leftstick;
+		if (stickr) leftstick = rightstick;
+		
 		drive(leftstick, -rightstick); // drive function
 		
 		manageGears(pressurel, pressurer, buttonl); // gearshift logic code
 		
 		manageBall(triggerl-triggerr, limit); // ball logic and timing code
-		
-		/*if (buttonr && !lastbuttonr) switchCamera(); // right bumper switches cameras
-		lastbuttonr = buttonr; // store this so we don't continuously switch while the button is held
-		*/
 		
 		sendData(); // periodic function
 	}
@@ -228,18 +220,20 @@ public class Robot extends IterativeRobot {
 	}
 	
 	boolean timerRunning = false; // for some reason, timers don't have a field to figure this out
+	boolean intakeReady = false;
 	boolean intake = false;
 	boolean eject = false;
 	boolean close = false;
-	
+
 	void manageBall(double direction, boolean limit) {
 		// positive values eject, negative values intake
-		// ideally ballholder.forward will open it
+		// ideally ballholder.forward will lower the plate
 		// this is really messy logic
 		if (direction < -Settings.get("deadzone")) { // if the ball is coming in
-			if (!timerRunning) {
+			if (!intakeReady) {
 				ballholder.forward(); // drop the plate
 				openServos(); // open servos to accept the ball
+				intakeReady = true;
 			}
 			ballmotor.set(direction*Settings.get("ballmotormap")); // spin up the motor in reverse to intake
 			intake = true; // set these values 
@@ -254,6 +248,7 @@ public class Robot extends IterativeRobot {
 			eject = true; // set these
 			intake = false;
 			close = false;
+			intakeReady = false;
 		} else {
 			ballmotor.set(0); // stop the motor, and stop the timers (TODO: fix)
 			if (!intake) {
@@ -268,6 +263,7 @@ public class Robot extends IterativeRobot {
 				liftTimer.start();
 				close = true;
 			}
+			intakeReady = false;
 		}
 		//// for the eject mode, we want to spin up the motors and wait a sec to eject the ball
 		if (timerRunning && eject && ballTimer.get() > Settings.get("balltimer")) { // if waiting to eject, and time has passed
@@ -284,7 +280,7 @@ public class Robot extends IterativeRobot {
 			ballTimer.stop(); // and reset the variables
 			//timerRunning = false;
 			//intake = false;
-		} else if (intake && limit) { // if limit switch is tripped and intaking
+		} else if (intake && intakeReady && limit) { // if limit switch is tripped and intaking
 			if (!timerRunning) { 
 				ballTimer.reset();
 				ballTimer.start(); // if timer hasn't started, start it
@@ -294,24 +290,54 @@ public class Robot extends IterativeRobot {
 		}
 		if (close && liftTimer.get() > Settings.get("lifttimer")) { // to automatically lift plate so it doesn't break off
 			ballholder.backward();
-			//closeServos();
 			liftTimer.stop(); // stop timer
 			close = false;
 		}
 	}
+	
+	boolean armTimerRunning = false;
+	double armValue = 0;
+	
+	void manageArm(boolean up, boolean down) {
+		if (!armTimerRunning) {
+			if (up) {
+				arms.set(Settings.get("armspeed"));
+			} else if (down) {
+				arms.set(-Settings.get("armspeed"));
+			} else {
+				arms.set(0);
+			}
+		} /*else {
+			if (armTimer.get() > Settings.get("armtiming")) {
+				armTimer.stop();
+				armTimer.reset();
+				armTimerRunning = false;
+			} else {
+				arms.set(armValue);
+			}
+		}*/
+	}
+	/*
+	void setArms(double d) {
+		armTimer.reset();
+		armTimer.start();
+		armTimerRunning = true;
+		armValue = d;
+	}
+	*/
 
-	boolean lastgear = true; // true = high, false = low gear
+	boolean lastGear = true; // true = high, false = low gear
 	
 	void manageGears(double lpressure, double rpressure, boolean override) {
 		// not sure what to do with the encoder/speed thing yet (double lencoder, double rencoder, double lspeed, double rspeed,) <-- add that in
 		boolean gear = !(lpressure > Settings.get("pressure") || rpressure > Settings.get("pressure") || override);
 
-		if (gear != lastgear && gear) {
+		if (gear != lastGear && gear) {
 			shift.forward();
-		} else if (gear != lastgear && !gear) {
+		} else if (gear != lastGear && !gear) {
 			shift.backward();
 		}
-		lastgear = gear;
+		lastGear = gear;
 	}
 	
 	void openServos() {
@@ -349,7 +375,7 @@ public class Robot extends IterativeRobot {
 		
 		Settings.sync(); // this syncs local sttings with the NetworkTable and the DS config utility
 		
-		syncSensors();
+		//syncSensors(); // disabled for competition
 		
 		//digit board
 		try {
@@ -357,11 +383,7 @@ public class Robot extends IterativeRobot {
 		} catch (RuntimeException a) { } // to handle I2C errors?
 		
 		// now do light stuff
-		runLights();
-		/*
-		// manage camera 
-		NIVision.IMAQdxGrab(cameras[curcamera], curframe, 1); // copy the image
-		cserver.setImage(curframe); // I hope this doesn't lag anything*/
+		//runLights(); // disabled 
 	}
 	
 	void runLights() {
@@ -386,11 +408,6 @@ public class Robot extends IterativeRobot {
 		} catch (RuntimeException a) { } // catch I2C errors
 	}
 	
-	void switchCamera() {
-		NIVision.IMAQdxStopAcquisition(cameras[curcamera]); // stop current camera (might actually not want to start/stop so often
-		curcamera += 1; curcamera %= numcameras; // advance counter
-		NIVision.IMAQdxConfigureGrab(cameras[curcamera]); // start new camera (disabled)
-	}
 	
 	void syncSensors() {
 		try { // put data into table (probably disable this during comp
