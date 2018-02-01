@@ -206,7 +206,8 @@ public class Robot extends IterativeRobot {
 	//////////////////////////////// various management functions
 	
 	void drive(double left, double right) {
-		if (Math.abs(left) > Settings.get("deadzone")) { // deadzone the motors
+		/*Jackson's Tankdrive:
+		 * if (Math.abs(left) > Settings.get("deadzone")) { // deadzone the motors
 			leftdrive.set(Math.pow(left,3)*Settings.get("motormap")); // cubic motor map
 		} else {
 			leftdrive.set(0);
@@ -217,6 +218,20 @@ public class Robot extends IterativeRobot {
 		} else {
 			rightdrive.set(0);
 		}
+		*/
+		//Braeden's Arcade Drive:
+		
+		if (Math.abs(left) < .05) {
+			left = 0.0;
+		}
+		if (Math.abs(right) < .05) {
+			right = 0.0;
+		}
+		return joystickValue;
+		leftdrive.set((left-right)/2);
+		rightdrive.set((left+right)/2);
+		
+		
 	}
 	
 	boolean timerRunning = false; // for some reason, timers don't have a field to figure this out
